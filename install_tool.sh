@@ -217,13 +217,25 @@ if [ -z "${FLINT_ARB_HEADER}" ]; then
             "${FLINT_SRC}"
     fi
 
-    (
-        cd "${FLINT_SRC}"
-        ./bootstrap.sh 2>/dev/null || true
-        ./configure
-        make -j"$(nproc)"
-        make install
-    )
+    # FLINT 3.x builds via CMake (its own CMakeLists.txt), not autotools -
+    # there is no ./configure script in the release tree at all, so a
+    # ./bootstrap.sh + ./configure + make sequence (FLINT 2.x's build
+    # system) fails outright. gmp/mpfr are found via CMake's own
+    # find_package/pkg-config lookups, same libgmp-dev/libmpfr-dev
+    # installed above.
+    FLINT_CMAKE_BUILD_DIR="${FLINT_SRC}/build"
+
+    cmake \
+        -S "${FLINT_SRC}" \
+        -B "${FLINT_CMAKE_BUILD_DIR}" \
+        -DCMAKE_BUILD_TYPE=Release
+
+    cmake \
+        --build "${FLINT_CMAKE_BUILD_DIR}" \
+        -j"$(nproc)"
+
+    cmake \
+        --install "${FLINT_CMAKE_BUILD_DIR}"
 
     ldconfig
 
