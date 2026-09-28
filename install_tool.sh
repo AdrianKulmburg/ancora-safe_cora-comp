@@ -1,22 +1,21 @@
 #!/bin/bash
 
 # ============================================================================
-# install_tool.sh
+# install_tool.sh (SAFE mode)
 # ============================================================================
 #
-# CORA-COMP installation script for ancora - SAFE MODE ONLY.
+# CORA-COMP installation script for ancora, ANCORA_MODE_SAFE only.
 #
-# This build is exclusively ANCORA_MODE_SAFE (FLINT/ARB, arbitrary
-# precision). There is NO FAST mode, and NO GPU support anywhere in this
-# script: ANCORA_MODE_SAFE and ANCORA_USE_GPU are mutually exclusive in
-# ancora's own CMakeLists.txt (GPU is a FAST-only feature), so a SAFE-only
-# toolkit needs no CUDA, no HIP, no BLAS, no HiGHS, and no GPU detection at
-# all.
+# This toolkit is SAFE-only: there is no FAST-mode build here and no GPU
+# support anywhere (GPU is a FAST-only feature in ancora's own
+# CMakeLists.txt, mutually exclusive with ANCORA_MODE_SAFE). It builds:
 #
-# It builds:
+#   libancora.a
+#   ancora_benchmark_safe
 #
-#   libancora.a            (ANCORA_MODE_SAFE static library)
-#   ancora_benchmark_safe   (the benchmark driver, always run on CPU)
+# Requires CMake 3.28+ (ancora's own CMakeLists.txt sets this as its
+# cmake_minimum_required unconditionally, even though SAFE mode itself
+# doesn't need HIP's native language support).
 #
 # ============================================================================
 
@@ -75,13 +74,12 @@ section()
 # Banner
 # ============================================================================
 
-section "Installing ancora tool (SAFE mode only)"
+section "Installing ancora tool (SAFE mode)"
 
 echo "Interface version : ${VERSION}"
 echo "Toolkit directory : ${TOOLKIT_DIR}"
 echo "Repository root   : ${REPO_ROOT}"
-echo "Mode              : ANCORA_MODE_SAFE (FLINT/ARB, arbitrary precision)"
-echo "GPU support       : none (SAFE mode has no GPU path)"
+echo "Mode              : ANCORA_MODE_SAFE (FLINT/ARB, no GPU)"
 
 
 # ============================================================================
@@ -102,7 +100,9 @@ DEBIAN_FRONTEND=noninteractive apt-get install -y \
     wget \
     curl \
     build-essential \
+    libgomp1 \
     ca-certificates \
+    gpg \
     pkg-config
 
 
@@ -111,9 +111,9 @@ DEBIAN_FRONTEND=noninteractive apt-get install -y \
 # ============================================================================
 #
 # ancora's top-level CMakeLists.txt unconditionally requires CMake 3.28+
-# (cmake_minimum_required(VERSION 3.28) at the very top, regardless of
-# whether GPU support is requested), so this still applies even though
-# this toolkit never touches HIP/CUDA.
+# (it needs that for the FAST+GPU flavor's native HIP language support),
+# even though the SAFE flavor built here doesn't touch HIP at all. Install
+# from the Python wheel so this doesn't depend on the distro's CMake.
 # ============================================================================
 
 section "Checking CMake"
@@ -151,34 +151,31 @@ fi
 
 
 # ============================================================================
-# 3. FLINT / ARB
+# 3. FLINT / Arb
 # ============================================================================
 #
-# ANCORA_MODE_SAFE links against FLINT::FLINT (see ancora's CMakeLists.txt),
-# and ancora's own headers do `#include <flint/arb.h>` - i.e. they assume
-# FLINT 3.x's UNIFIED header layout, where Arb was absorbed into FLINT
-# itself and every header (flint.h, arb.h, acb.h, ...) lives together under
-# one prefix/include/flint/ directory.
+# ancora's SAFE-mode headers assume FLINT 3.x's unified layout, where Arb
+# is absorbed into FLINT itself and every header (flint.h, arb.h, acb.h,
+# ...) lives together under <prefix>/include/flint/. Debian/Ubuntu's apt
+# packages (libflint-dev + libarb-dev) are the OLDER FLINT 2.x + separate
+# Arb split, where arb.h lands at the top level (/usr/include/arb.h), NOT
+# under flint/ -- so #include <flint/arb.h> fails even with those apt
+# packages installed. Detection therefore checks specifically for
+# flint/arb.h, not just flint/flint.h (which the old split also provides).
 #
-# IMPORTANT: Ubuntu's apt packages (libflint-dev + libarb-dev) are the OLD
-# FLINT 2.x + separate-Arb split. That split installs flint/flint.h (so a
-# check for just that header wrongly looks "found"), but Arb's headers land
-# at the TOP LEVEL (/usr/include/arb.h), not nested under flint/ - so
-# `#include <flint/arb.h>` fails to compile even though "FLINT" is
-# technically installed. There is no way to get the layout ancora expects
-# from Ubuntu's apt packages; FLINT must be built from source here.
+# FLINT_VERSION is pinned to v3.6.0 rather than an earlier 3.x point
+# release: 3.1.3 was tried first and turned out to have an incomplete/
+# still-transitional flint_rand_* API (declarations for the new
+# flint_rand_init/flint_rand_clear/flint_rand_set_seed names existed
+# without matching symbols to link against in some builds), which a more
+# settled later release avoids having to track by trial and error.
 #
-# So: check specifically for flint/arb.h (not just flint/flint.h), and if
-# that split layout is all that apt provides, build FLINT 3.x from source
-# unconditionally - this also produces flint/arb.h in the right place.
+# FLINT 3.x builds via CMake (its own CMakeLists.txt), not autotools --
+# there is no ./configure script in the release tree.
 # ============================================================================
 
 section "Installing FLINT / ARB"
 
-# gmp/mpfr are FLINT's own build dependencies either way (apt's or a
-# from-source FLINT both need them); libflint-dev/libarb-dev are installed
-# too since they may pull in useful runtime bits, but are NOT trusted for
-# the actual header layout check below.
 DEBIAN_FRONTEND=noninteractive apt-get install -y \
     libgmp-dev \
     libmpfr-dev \
@@ -207,35 +204,18 @@ if [ -z "${FLINT_ARB_HEADER}" ]; then
     echo "Building FLINT 3.x from source, which bundles Arb under flint/."
 
     FLINT_SRC="${TOOLKIT_DIR}/flint"
-    FLINT_VERSION="${FLINT_VERSION:-v3.1.3}"
+    FLINT_VERSION="${FLINT_VERSION:-v3.6.0}"
 
     if [ ! -d "${FLINT_SRC}/.git" ]; then
-        git clone \
-            --branch "${FLINT_VERSION}" \
-            --depth 1 \
-            https://github.com/flintlib/flint.git \
-            "${FLINT_SRC}"
+        git clone --branch "${FLINT_VERSION}" --depth 1 \
+            https://github.com/flintlib/flint.git "${FLINT_SRC}"
     fi
 
-    # FLINT 3.x builds via CMake (its own CMakeLists.txt), not autotools -
-    # there is no ./configure script in the release tree at all, so a
-    # ./bootstrap.sh + ./configure + make sequence (FLINT 2.x's build
-    # system) fails outright. gmp/mpfr are found via CMake's own
-    # find_package/pkg-config lookups, same libgmp-dev/libmpfr-dev
-    # installed above.
     FLINT_CMAKE_BUILD_DIR="${FLINT_SRC}/build"
 
-    cmake \
-        -S "${FLINT_SRC}" \
-        -B "${FLINT_CMAKE_BUILD_DIR}" \
-        -DCMAKE_BUILD_TYPE=Release
-
-    cmake \
-        --build "${FLINT_CMAKE_BUILD_DIR}" \
-        -j"$(nproc)"
-
-    cmake \
-        --install "${FLINT_CMAKE_BUILD_DIR}"
+    cmake -S "${FLINT_SRC}" -B "${FLINT_CMAKE_BUILD_DIR}" -DCMAKE_BUILD_TYPE=Release
+    cmake --build "${FLINT_CMAKE_BUILD_DIR}" -j"$(nproc)"
+    cmake --install "${FLINT_CMAKE_BUILD_DIR}"
 
     ldconfig
 
@@ -274,7 +254,6 @@ section "Locating ancora source"
 
 ANCORA_SOURCE_DIR="${ANCORA_SOURCE_DIR:-}"
 
-
 if [ -n "${ANCORA_SOURCE_DIR}" ]; then
 
     echo "Using ANCORA_SOURCE_DIR:"
@@ -295,7 +274,6 @@ else
     echo "Cloning:"
     echo "    ${ANCORA_REPO_URL}"
 
-
     if [ ! -d "${ANCORA_SOURCE_DIR}/.git" ]; then
 
         git clone \
@@ -307,11 +285,9 @@ else
 
 fi
 
-
 if [ ! -f "${ANCORA_SOURCE_DIR}/CMakeLists.txt" ]; then
     die "ancora source not found at ${ANCORA_SOURCE_DIR}"
 fi
-
 
 echo
 echo "Using ancora source:"
@@ -334,17 +310,14 @@ cmake \
     -DANCORA_USE_GPU=OFF \
     -DANCORA_BUILD_TESTS=OFF
 
-
 cmake \
     --build "${SAFE_BUILD_DIR}" \
     --target ancora \
     -j"$(nproc)"
 
-
 if [ ! -f "${SAFE_BUILD_DIR}/libancora.a" ]; then
     die "SAFE ancora library was not produced."
 fi
-
 
 echo
 echo "SAFE library:"
@@ -357,12 +330,6 @@ echo "    ${SAFE_BUILD_DIR}/libancora.a"
 
 section "Building SAFE benchmark"
 
-# Prefer pkg-config for FLINT's link flags when a .pc file is available
-# (this is what a from-source FLINT install produces); otherwise fall back
-# to the conventional link line. A from-source install defaults to
-# /usr/local, whose pkgconfig directory isn't always on PKG_CONFIG_PATH by
-# default, so add it explicitly here rather than relying on the ambient
-# environment.
 export PKG_CONFIG_PATH="/usr/local/lib/pkgconfig:/usr/local/lib64/pkgconfig:${PKG_CONFIG_PATH:-}"
 
 FLINT_LIBS=""
@@ -373,8 +340,7 @@ else
 fi
 
 cc \
-    -O2 \
-    -std=c11 \
+    -O2 -std=c11 \
     -I"${ANCORA_SOURCE_DIR}/include" \
     -DANCORA_MODE=ANCORA_MODE_SAFE \
     "${TOOLKIT_DIR}/src/ancora_benchmark.c" \
@@ -383,11 +349,9 @@ cc \
     ${FLINT_LIBS} \
     -lm
 
-
 if [ ! -x "${TOOLKIT_DIR}/ancora_benchmark_safe" ]; then
     die "SAFE benchmark was not produced."
 fi
-
 
 echo
 echo "SAFE benchmark:"
@@ -400,13 +364,10 @@ echo "    ${TOOLKIT_DIR}/ancora_benchmark_safe"
 
 section "Final verification"
 
-echo "Running startup smoke test..."
+"${TOOLKIT_DIR}/ancora_benchmark_safe" zonotope startup 1 1 1 1 0
 
-if ! "${TOOLKIT_DIR}/ancora_benchmark_safe" zonotope startup 1 1 1 1 0; then
-    die "SAFE benchmark startup smoke test failed."
-fi
-
-echo "OK."
+echo
+echo "SAFE benchmark smoke test passed."
 
 
 # ============================================================================
@@ -415,7 +376,8 @@ echo "OK."
 
 section "Installation complete"
 
-echo "SAFE benchmark:"
+echo "SAFE:"
 echo "    ${TOOLKIT_DIR}/ancora_benchmark_safe"
 echo
-echo "No FAST mode, no GPU support - this toolkit is SAFE-only."
+echo "FLINT/Arb header:"
+echo "    ${FLINT_ARB_HEADER}"
