@@ -154,40 +154,59 @@ fi
 # 3. FLINT / ARB
 # ============================================================================
 #
-# ANCORA_MODE_SAFE links against FLINT::FLINT (see ancora's CMakeLists.txt).
-# Modern FLINT (3.x) bundles Arb's functionality directly; some
-# distributions still package Arb separately (libarb-dev) as a FLINT
-# dependency. Try apt first; if the headers/library aren't found afterward,
-# build FLINT from source, mirroring how install_tool.sh previously
-# source-built HiGHS when the apt package was missing or too old.
+# ANCORA_MODE_SAFE links against FLINT::FLINT (see ancora's CMakeLists.txt),
+# and ancora's own headers do `#include <flint/arb.h>` - i.e. they assume
+# FLINT 3.x's UNIFIED header layout, where Arb was absorbed into FLINT
+# itself and every header (flint.h, arb.h, acb.h, ...) lives together under
+# one prefix/include/flint/ directory.
+#
+# IMPORTANT: Ubuntu's apt packages (libflint-dev + libarb-dev) are the OLD
+# FLINT 2.x + separate-Arb split. That split installs flint/flint.h (so a
+# check for just that header wrongly looks "found"), but Arb's headers land
+# at the TOP LEVEL (/usr/include/arb.h), not nested under flint/ - so
+# `#include <flint/arb.h>` fails to compile even though "FLINT" is
+# technically installed. There is no way to get the layout ancora expects
+# from Ubuntu's apt packages; FLINT must be built from source here.
+#
+# So: check specifically for flint/arb.h (not just flint/flint.h), and if
+# that split layout is all that apt provides, build FLINT 3.x from source
+# unconditionally - this also produces flint/arb.h in the right place.
 # ============================================================================
 
 section "Installing FLINT / ARB"
 
+# gmp/mpfr are FLINT's own build dependencies either way (apt's or a
+# from-source FLINT both need them); libflint-dev/libarb-dev are installed
+# too since they may pull in useful runtime bits, but are NOT trusted for
+# the actual header layout check below.
 DEBIAN_FRONTEND=noninteractive apt-get install -y \
-    libflint-dev \
     libgmp-dev \
     libmpfr-dev \
+    2>/dev/null || true
+
+DEBIAN_FRONTEND=noninteractive apt-get install -y \
+    libflint-dev \
     libarb-dev \
     2>/dev/null || true
 
-FLINT_HEADER=""
+FLINT_ARB_HEADER=""
 
 for candidate in \
-    /usr/include/flint/flint.h \
-    /usr/local/include/flint/flint.h
+    /usr/include/flint/arb.h \
+    /usr/local/include/flint/arb.h
 do
     if [ -f "${candidate}" ]; then
-        FLINT_HEADER="${candidate}"
+        FLINT_ARB_HEADER="${candidate}"
         break
     fi
 done
 
-if [ -z "${FLINT_HEADER}" ]; then
+if [ -z "${FLINT_ARB_HEADER}" ]; then
 
-    echo "FLINT not found via apt. Building FLINT from source."
+    echo "flint/arb.h not found (apt's FLINT, if any, is the old FLINT 2.x + separate Arb split)."
+    echo "Building FLINT 3.x from source, which bundles Arb under flint/."
 
-    FLINT_SRC="${TOOLKIT_DIR}/flint2"
+    FLINT_SRC="${TOOLKIT_DIR}/flint"
     FLINT_VERSION="${FLINT_VERSION:-v3.1.3}"
 
     if [ ! -d "${FLINT_SRC}/.git" ]; then
@@ -209,30 +228,30 @@ if [ -z "${FLINT_HEADER}" ]; then
     ldconfig
 
     for candidate in \
-        /usr/include/flint/flint.h \
-        /usr/local/include/flint/flint.h
+        /usr/include/flint/arb.h \
+        /usr/local/include/flint/arb.h
     do
         if [ -f "${candidate}" ]; then
-            FLINT_HEADER="${candidate}"
+            FLINT_ARB_HEADER="${candidate}"
             break
         fi
     done
 
-    if [ -z "${FLINT_HEADER}" ]; then
-        die "FLINT was built from source, but flint.h still could not be located."
+    if [ -z "${FLINT_ARB_HEADER}" ]; then
+        die "FLINT 3.x was built from source, but flint/arb.h still could not be located."
     fi
 
 else
 
-    echo "FLINT found via apt."
+    echo "flint/arb.h found (a unified FLINT 3.x layout is already present)."
 
 fi
 
-ldconfig
-
 echo
-echo "FLINT header:"
-echo "    ${FLINT_HEADER}"
+echo "FLINT/Arb header:"
+echo "    ${FLINT_ARB_HEADER}"
+
+ldconfig
 
 
 # ============================================================================
@@ -328,12 +347,17 @@ section "Building SAFE benchmark"
 
 # Prefer pkg-config for FLINT's link flags when a .pc file is available
 # (this is what a from-source FLINT install produces); otherwise fall back
-# to the conventional link line.
+# to the conventional link line. A from-source install defaults to
+# /usr/local, whose pkgconfig directory isn't always on PKG_CONFIG_PATH by
+# default, so add it explicitly here rather than relying on the ambient
+# environment.
+export PKG_CONFIG_PATH="/usr/local/lib/pkgconfig:/usr/local/lib64/pkgconfig:${PKG_CONFIG_PATH:-}"
+
 FLINT_LIBS=""
 if have_command pkg-config && pkg-config --exists flint 2>/dev/null; then
     FLINT_LIBS="$(pkg-config --libs flint)"
 else
-    FLINT_LIBS="-lflint -lmpfr -lgmp"
+    FLINT_LIBS="-L/usr/local/lib -Wl,-rpath,/usr/local/lib -lflint -lmpfr -lgmp"
 fi
 
 cc \
