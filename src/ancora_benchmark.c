@@ -80,8 +80,11 @@ static int unsupported(const char *msg)
  * convention used throughout the library, e.g. ancora_mat_scalarMul's
  * `scalar` parameter is arb_t in SAFE mode). This driver only ever deals
  * in doubles (random draws, unit-direction normalization), so these
- * wrappers do the arb_t<->double conversion via arb_set_d/arb_get_d,
- * letting every call site below just pass/read a plain double. */
+ * wrappers do the arb_t<->double conversion via arb_set_d and, for the
+ * reverse direction, arf_get_d(arb_midref(x), ARF_RND_NEAR) -- there is no
+ * arb_get_d in Arb's API; an arb_t is a midpoint (arf_t) plus a radius, so
+ * reading a double back out goes through the midpoint explicitly. Letting
+ * every call site below just pass/read a plain double. */
 static ancora_status vec_set_d(ancora_vec *v, slong i, double val)
 {
     arb_t tmp;
@@ -97,7 +100,7 @@ static ancora_status vec_get_d(const ancora_vec *v, slong i, double *val)
     arb_init(tmp);
     ancora_status st = ancora_vec_get(v, i, tmp);
     if (st == ANCORA_OK) {
-        *val = arb_get_d(tmp);
+        *val = arf_get_d(arb_midref(tmp), ARF_RND_NEAR);
     }
     arb_clear(tmp);
     return st;
