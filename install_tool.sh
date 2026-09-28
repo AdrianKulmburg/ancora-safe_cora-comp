@@ -163,15 +163,21 @@ fi
 # packages installed. Detection therefore checks specifically for
 # flint/arb.h, not just flint/flint.h (which the old split also provides).
 #
-# FLINT_VERSION is pinned to v3.6.0 rather than an earlier 3.x point
+# FLINT_VERSION is pinned to 3.6.0 rather than an earlier 3.x point
 # release: 3.1.3 was tried first and turned out to have an incomplete/
 # still-transitional flint_rand_* API (declarations for the new
 # flint_rand_init/flint_rand_clear/flint_rand_set_seed names existed
 # without matching symbols to link against in some builds), which a more
 # settled later release avoids having to track by trial and error.
 #
-# FLINT 3.x builds via CMake (its own CMakeLists.txt), not autotools --
-# there is no ./configure script in the release tree.
+# FLINT 3.x builds via AUTOTOOLS, not CMake: FLINT's own CMakeLists.txt
+# deliberately refuses to configure on a non-Windows system ("Please use
+# the Autotools configuration along with the Makefile instead") -- CMake
+# support is Windows-only, everywhere else uses ./configure. A bare
+# `git clone` does NOT include a pre-generated ./configure (that only
+# exists after running ./bootstrap.sh, which itself needs autoconf/
+# automake/libtool installed), so this downloads the release TARBALL
+# instead, which ships ./configure already generated.
 # ============================================================================
 
 section "Installing FLINT / ARB"
@@ -201,21 +207,34 @@ done
 if [ -z "${FLINT_ARB_HEADER}" ]; then
 
     echo "flint/arb.h not found (apt's FLINT, if any, is the old FLINT 2.x + separate Arb split)."
-    echo "Building FLINT 3.x from source, which bundles Arb under flint/."
+    echo "Building FLINT 3.x from source (Autotools), which bundles Arb under flint/."
 
-    FLINT_SRC="${TOOLKIT_DIR}/flint"
-    FLINT_VERSION="${FLINT_VERSION:-v3.6.0}"
+    # apt's autoconf/automake/libtool are NOT needed here: the release
+    # tarball ships a pre-generated ./configure, unlike a bare git clone.
+    DEBIAN_FRONTEND=noninteractive apt-get install -y \
+        m4 \
+        2>/dev/null || true
 
-    if [ ! -d "${FLINT_SRC}/.git" ]; then
-        git clone --branch "${FLINT_VERSION}" --depth 1 \
-            https://github.com/flintlib/flint.git "${FLINT_SRC}"
+    FLINT_VERSION="${FLINT_VERSION:-3.6.0}"   # no leading 'v' -- matches the release tarball name
+    FLINT_TARBALL="flint-${FLINT_VERSION}.tar.gz"
+    FLINT_SRC="${TOOLKIT_DIR}/flint-${FLINT_VERSION}"
+
+    if [ ! -d "${FLINT_SRC}" ]; then
+
+        wget -q \
+            "https://github.com/flintlib/flint/releases/download/v${FLINT_VERSION}/${FLINT_TARBALL}" \
+            -O "${TOOLKIT_DIR}/${FLINT_TARBALL}"
+
+        tar -xzf "${TOOLKIT_DIR}/${FLINT_TARBALL}" -C "${TOOLKIT_DIR}"
+
     fi
 
-    FLINT_CMAKE_BUILD_DIR="${FLINT_SRC}/build"
-
-    cmake -S "${FLINT_SRC}" -B "${FLINT_CMAKE_BUILD_DIR}" -DCMAKE_BUILD_TYPE=Release
-    cmake --build "${FLINT_CMAKE_BUILD_DIR}" -j"$(nproc)"
-    cmake --install "${FLINT_CMAKE_BUILD_DIR}"
+    (
+        cd "${FLINT_SRC}"
+        ./configure --prefix=/usr/local
+        make -j"$(nproc)"
+        make install
+    )
 
     ldconfig
 
